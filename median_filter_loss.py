@@ -8,11 +8,13 @@ def initialize_paths(paths, one_loss, zero_loss):
 
     loss_diff = zero_loss - one_loss
 
+    # compute best unprunable seqeunce (second half all ones)
     max_loss, max_seq = torch.min(torch.stack([zero_loss, one_loss])[:, :length//2], dim=0)
     max_loss = torch.sum(max_loss) + torch.sum(one_loss[length//2:])
     max_seq = max_seq.tolist() + [1]*(length//2+1)
     paths[max_loss] = max_seq
 
+    # check all target bit flips that don't violate median filter and are better than best unprunable
     inds = (loss_diff < 0).nonzero()[:, 0].tolist()
     for n in range(length//2):
         for comb in combinations(inds, n+1):
@@ -124,6 +126,9 @@ if __name__ == "__main__":
     print(target)
     print(output)
     print(new_target)
+    print("loss:", loss)
+    test_fn = torch.nn.BCELoss()
+    print("loss:", test_fn(output, new_target.float()))
 
 #    target = torch.zeros(2, 1000)
 #    target[:, 200:300] = 1
@@ -143,3 +148,6 @@ if __name__ == "__main__":
 #    print(target[:, 200:210])
 #    print(output[:, 200:210])
 #    print(new_target[:, 200:210])
+#    print("loss:", loss)
+#    test_fn = torch.nn.BCELoss()
+#    print("loss:", test_fn(output, new_target.float()))
