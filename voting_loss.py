@@ -38,6 +38,7 @@ class SupermajorityFilterLoss(torch.nn.Module):
         filter_size=3,
         majority_size=None,
         filter_dim=-1,
+        class_dim=None,
         reduction="mean",
         return_target=False,
     ):
@@ -45,8 +46,19 @@ class SupermajorityFilterLoss(torch.nn.Module):
 
         self.loss_fn = loss
         self.filter_size = filter_size
-        self.majority_size = majority_size if majority_size is not None else filter_size // 2 + 1
+        if isinstance(filter_size, list):
+            assert class_dim is not None
+            if majority_size is not None:
+                assert len(majority_size) == len(filter_size)
+                self.majority_size = majority_size
+            else:
+                self.majority_size = [size // 2 + 1 for size in filter_size]
+        else:
+            assert not isinstance(majority_size, list)
+            class_dim = None
+            self.majority_size = majority_size if majority_size is not None else filter_size // 2 + 1
         self.filter_dim = filter_dim
+        self.class_dim = class_dim
         assert reduction in ["mean", "sum"]
         self.reduction = reduction
         self.return_target = return_target
@@ -56,6 +68,10 @@ class SupermajorityFilterLoss(torch.nn.Module):
     def forward(self, output, target):
         output = output.transpose(self.filter_dim, -1)
         target = target.transpose(self.filter_dim, -1)
+        if self.class_dim == -1 or self.class_dim == len(output)-1:
+            class_dim = self.filter_dim
+        else:
+            class_dim = self.class_dim
         if self.return_target:
             new_target = target.clone()
 
@@ -72,6 +88,13 @@ class SupermajorityFilterLoss(torch.nn.Module):
         offsets = (difference == -1).nonzero()
 
         for onset, offset in zip(onsets, offsets):
+            if class_dim is not None:
+                class_ind = onset[class_dim]
+                filter_size = self.filter_size[class_ind]
+                majority_size = self.majority_size[class_ind]
+            else:
+                filter_size = self.filter_size
+                majority_size = self.majority_size
             batch_etc = onset[:-1]
             onset = onset[-1]
             offset = offset[-1]
@@ -80,17 +103,15 @@ class SupermajorityFilterLoss(torch.nn.Module):
             sub_zero_loss = zero_loss[*batch_etc, onset:offset]
 
             length = offset - onset
-            if length < self.majority_size:  # short segments are untouched
+            if length < majority_size:  # short segments are untouched
                 loss += torch.sum(sub_one_loss)
                 continue
 
-            if length < self.filter_size:
+            if length < filter_size:
                 filter_size = length
-            else:
-                filter_size = self.filter_size
 
             paths = SortedDict()
-            initialize_paths(paths, sub_one_loss[:filter_size], sub_zero_loss[:filter_size], self.majority_size)
+            initialize_paths(paths, sub_one_loss[:filter_size], sub_zero_loss[:filter_size], majority_size)
 
             for i in range(filter_size, length):
                 suffix_to_paths = {} # We keep track of all new paths that end in the same pattern and only keep best
@@ -103,13 +124,13 @@ class SupermajorityFilterLoss(torch.nn.Module):
                         except KeyError:
                             suffix_to_paths[str(new_path[-filter_size:])] = SortedDict()
                             suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
-                        if self.majority_size == 1 or sum(inter_path[-self.majority_size+1:]) == self.majority_size-1:
+                        if majority_size == 1 or sum(inter_path[-majority_size+1:]) == majority_size-1:
                             break  # this path has lowest loss and can never be pruned, so we are done
 
                 else: # sub_zero_loss[i] < sub_one_loss[i]
                     new_max_loss = torch.inf
                     for inter_loss, inter_path in paths.items():
-                        if sum(inter_path[-filter_size+1:]) >= self.majority_size:
+                        if sum(inter_path[-filter_size+1:]) >= majority_size:
                             if inter_loss + sub_zero_loss[i] > new_max_loss:
                                 break # worse than an unprunable path, so we are done
                             new_loss = inter_loss + sub_zero_loss[i]
@@ -127,7 +148,7 @@ class SupermajorityFilterLoss(torch.nn.Module):
                             except KeyError:
                                 suffix_to_paths[str(new_path[-filter_size:])] = SortedDict()
                                 suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
-                            if self.majority_size == 1 or sum(inter_path[-self.majority_size+1:]) == self.majority_size-1:
+                            if majority_size == 1 or sum(inter_path[-majority_size+1:]) == majority_size-1:
                                 new_max_loss = inter_loss + sub_one_loss[i]
 
                 paths = SortedDict()
