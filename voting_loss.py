@@ -37,6 +37,7 @@ class SupermajorityFilterLoss(torch.nn.Module):
         loss,
         filter_size=3,
         majority_size=None,
+        filter_dim=-1,
         reduction="mean",
         return_target=False,
     ):
@@ -45,6 +46,7 @@ class SupermajorityFilterLoss(torch.nn.Module):
         self.loss_fn = loss
         self.filter_size = filter_size
         self.majority_size = majority_size if majority_size is not None else filter_size // 2 + 1
+        self.filter_dim = filter_dim
         assert reduction in ["mean", "sum"]
         self.reduction = reduction
         self.return_target = return_target
@@ -52,6 +54,8 @@ class SupermajorityFilterLoss(torch.nn.Module):
         self.loss_fn.reduction = "none"
 
     def forward(self, output, target):
+        output = output.transpose(self.filter_dim, -1)
+        target = target.transpose(self.filter_dim, -1)
         if self.return_target:
             new_target = target.clone()
 
@@ -140,7 +144,7 @@ class SupermajorityFilterLoss(torch.nn.Module):
             loss = loss / torch.numel(output)
 
         if self.return_target:
-            return loss, new_target
+            return loss, new_target.transpose(self.filter_dim, -1)
         else:
             return loss
 
