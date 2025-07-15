@@ -1,22 +1,23 @@
 import torch
 from sortedcontainers import SortedDict
 from itertools import combinations
+from functools import partial
 
 
-def initialize_paths(paths, one_loss, zero_loss):
+def initialize_paths(paths, one_loss, zero_loss, majority_size):
     length = len(one_loss)
 
     loss_diff = zero_loss - one_loss
 
     # compute best unprunable seqeunce (second half all ones)
-    max_loss, max_seq = torch.min(torch.stack([zero_loss, one_loss])[:, :length//2], dim=0)
-    max_loss = torch.sum(max_loss) + torch.sum(one_loss[length//2:])
-    max_seq = max_seq.tolist() + [1]*(length//2+1)
+    max_loss, max_seq = torch.min(torch.stack([zero_loss, one_loss])[:, :-majority_size], dim=0)
+    max_loss = torch.sum(max_loss) + torch.sum(one_loss[-majority_size:])
+    max_seq = max_seq.tolist() + [1]*majority_size
     paths[max_loss] = max_seq
 
     # check all target bit flips that don't violate median filter and are better than best unprunable
     inds = (loss_diff < 0).nonzero()[:, 0].tolist()
-    for n in range(length//2):
+    for n in range(length-majority_size):
         for comb in combinations(inds, n+1):
             comb_loss = 0
             comb_seq = [1] * length
@@ -30,19 +31,20 @@ def initialize_paths(paths, one_loss, zero_loss):
                 paths[comb_loss] = comb_seq
 
 
-class MedianFilterLoss(torch.nn.Module):
+class SupermajorityFilterLoss(torch.nn.Module):
     def __init__(
         self,
         loss,
         filter_size=3,
+        majority_size=None,
         reduction="mean",
         return_target=False,
     ):
         super().__init__()
 
         self.loss_fn = loss
-        assert filter_size % 2
         self.filter_size = filter_size
+        self.majority_size = majority_size if majority_size is not None else filter_size // 2 + 1
         assert reduction in ["mean", "sum"]
         self.reduction = reduction
         self.return_target = return_target
@@ -74,32 +76,60 @@ class MedianFilterLoss(torch.nn.Module):
             sub_zero_loss = zero_loss[*batch_etc, onset:offset]
 
             length = offset - onset
-            if length < self.filter_size:  # short segments are untouched
+            if length < self.majority_size:  # short segments are untouched
                 loss += torch.sum(sub_one_loss)
                 continue
 
-            paths = SortedDict()
-            initialize_paths(paths, sub_one_loss[:self.filter_size], sub_zero_loss[:self.filter_size])
+            if length < self.filter_size:
+                filter_size = length
+            else:
+                filter_size = self.filter_size
 
-            for i in range(self.filter_size, length):
-                new_paths = SortedDict()
+            paths = SortedDict()
+            initialize_paths(paths, sub_one_loss[:filter_size], sub_zero_loss[:filter_size], self.majority_size)
+
+            for i in range(filter_size, length):
+                suffix_to_paths = {} # We keep track of all new paths that end in the same pattern and only keep best
                 if sub_one_loss[i] < sub_zero_loss[i]:
                     for inter_loss, inter_path in paths.items():
-                        new_paths[inter_loss + sub_one_loss[i]] = inter_path + [1]
-                        if sum(inter_path[-self.filter_size//2+1:]) == self.filter_size // 2:
+                        new_loss = inter_loss + sub_one_loss[i]
+                        new_path = inter_path + [1]
+                        try:
+                            suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                        except KeyError:
+                            suffix_to_paths[str(new_path[-filter_size:])] = SortedDict()
+                            suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                        if self.majority_size == 1 or sum(inter_path[-self.majority_size+1:]) == self.majority_size-1:
                             break  # this path has lowest loss and can never be pruned, so we are done
+
                 else: # sub_zero_loss[i] < sub_one_loss[i]
                     new_max_loss = torch.inf
                     for inter_loss, inter_path in paths.items():
-                        if sum(inter_path[-self.filter_size+1:]) > self.filter_size // 2:
+                        if sum(inter_path[-filter_size+1:]) >= self.majority_size:
                             if inter_loss + sub_zero_loss[i] > new_max_loss:
                                 break # worse than an unprunable path, so we are done
-                            new_paths[inter_loss + sub_zero_loss[i]] = inter_path + [0]
+                            new_loss = inter_loss + sub_zero_loss[i]
+                            new_path = inter_path + [0]
+                            try:
+                                suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                            except KeyError:
+                                suffix_to_paths[str(new_path[-filter_size:])] = SortedDict()
+                                suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
                         if inter_loss + sub_one_loss[i] < new_max_loss:
-                            new_paths[inter_loss + sub_one_loss[i]] = inter_path + [1]
-                            if sum(inter_path[-self.filter_size//2+1:]) == self.filter_size // 2:
+                            new_loss = inter_loss + sub_one_loss[i]
+                            new_path = inter_path + [1]
+                            try:
+                                suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                            except KeyError:
+                                suffix_to_paths[str(new_path[-filter_size:])] = SortedDict()
+                                suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                            if self.majority_size == 1 or sum(inter_path[-self.majority_size+1:]) == self.majority_size-1:
                                 new_max_loss = inter_loss + sub_one_loss[i]
-                paths = new_paths
+
+                paths = SortedDict()
+                for suffix_paths in suffix_to_paths.values():
+                    best_path = suffix_paths.peekitem(0)
+                    paths[best_path[0]] = best_path[1]
 
             seg_loss, path = paths.peekitem(0)
             loss += seg_loss
@@ -115,39 +145,4 @@ class MedianFilterLoss(torch.nn.Module):
             return loss
 
 
-if __name__ == "__main__":
-    loss_fn = MedianFilterLoss(torch.nn.BCELoss(reduction="none"),
-                               filter_size=3,
-                               return_target=True)
-
-    target = torch.tensor([[0, 0, 1, 1, 1, 0, 1], [0, 1, 1, 1, 1, 1, 0]]).int()
-    output = torch.tensor([[0.1, 0.1, 0.9, 0.4, 0.9, 0.1, 0.9], [0.1, 0.9, 0.9, 0.4, 0.3, 0.9, 0.1]]).float()
-    loss, new_target = loss_fn(output, target)
-    print(target)
-    print(output)
-    print(new_target)
-    print("loss:", loss)
-    test_fn = torch.nn.BCELoss()
-    print("loss:", test_fn(output, new_target.float()))
-
-#    target = torch.zeros(2, 1000)
-#    target[:, 200:300] = 1
-#    target[:, 500:550] = 1
-#    target[:, 700:800] = 1
-#
-#    output = torch.clone(target)
-#    factor = 1.0
-#    output[:, 0:200] += torch.rand(2, 200)/factor
-#    output[:, 200:300] -= torch.rand(2, 100)/factor
-#    output[:, 300:500] += torch.rand(2, 200)/factor
-#    output[:, 500:550] -= torch.rand(2, 50)/factor
-#    output[:, 550:700] += torch.rand(2, 150)/factor
-#    output[:, 700:800] -= torch.rand(2, 100)/factor
-#    output[:, 800:1000] += torch.rand(2, 200)/factor
-#    loss, new_target = loss_fn(output, target)
-#    print(target[:, 200:210])
-#    print(output[:, 200:210])
-#    print(new_target[:, 200:210])
-#    print("loss:", loss)
-#    test_fn = torch.nn.BCELoss()
-#    print("loss:", test_fn(output, new_target.float()))
+MedianFilterLoss = partial(SupermajorityFilterLoss, majority_size=None)
