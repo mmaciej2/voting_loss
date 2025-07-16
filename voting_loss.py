@@ -120,10 +120,10 @@ class SupermajorityFilterLoss(torch.nn.Module):
                         new_loss = inter_loss + sub_one_loss[i]
                         new_path = inter_path + [1]
                         try:
-                            suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                            suffix_to_paths[str(new_path[-filter_size+1:])][new_loss] = new_path
                         except KeyError:
-                            suffix_to_paths[str(new_path[-filter_size:])] = SortedDict()
-                            suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                            suffix_to_paths[str(new_path[-filter_size+1:])] = SortedDict()
+                            suffix_to_paths[str(new_path[-filter_size+1:])][new_loss] = new_path
                         if majority_size == 1 or sum(inter_path[-majority_size+1:]) == majority_size-1:
                             break  # this path has lowest loss and can never be pruned, so we are done
 
@@ -136,18 +136,18 @@ class SupermajorityFilterLoss(torch.nn.Module):
                             new_loss = inter_loss + sub_zero_loss[i]
                             new_path = inter_path + [0]
                             try:
-                                suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                                suffix_to_paths[str(new_path[-filter_size+1:])][new_loss] = new_path
                             except KeyError:
-                                suffix_to_paths[str(new_path[-filter_size:])] = SortedDict()
-                                suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                                suffix_to_paths[str(new_path[-filter_size+1:])] = SortedDict()
+                                suffix_to_paths[str(new_path[-filter_size+1:])][new_loss] = new_path
                         if inter_loss + sub_one_loss[i] < new_max_loss:
                             new_loss = inter_loss + sub_one_loss[i]
                             new_path = inter_path + [1]
                             try:
-                                suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                                suffix_to_paths[str(new_path[-filter_size+1:])][new_loss] = new_path
                             except KeyError:
-                                suffix_to_paths[str(new_path[-filter_size:])] = SortedDict()
-                                suffix_to_paths[str(new_path[-filter_size:])][new_loss] = new_path
+                                suffix_to_paths[str(new_path[-filter_size+1:])] = SortedDict()
+                                suffix_to_paths[str(new_path[-filter_size+1:])][new_loss] = new_path
                             if majority_size == 1 or sum(inter_path[-majority_size+1:]) == majority_size-1:
                                 new_max_loss = inter_loss + sub_one_loss[i]
 
